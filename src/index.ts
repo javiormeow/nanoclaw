@@ -217,8 +217,18 @@ async function processTaskIpc(data: {
 
   switch (data.type) {
     case 'schedule_task':
-      if (data.prompt && data.schedule_type && data.schedule_value && data.groupFolder && data.chatJid) {
+      if (data.prompt && data.schedule_type && data.schedule_value && data.groupFolder) {
         const scheduleType = data.schedule_type as 'cron' | 'interval' | 'once';
+
+        // Resolve the correct JID for the target group
+        const targetJid = Object.entries(registeredGroups).find(
+          ([, group]) => group.folder === data.groupFolder
+        )?.[0];
+
+        if (!targetJid) {
+          logger.warn({ groupFolder: data.groupFolder }, 'Cannot schedule task: target group not registered');
+          break;
+        }
 
         let nextRun: string | null = null;
         if (scheduleType === 'cron') {
@@ -235,7 +245,7 @@ async function processTaskIpc(data: {
         createTask({
           id: taskId,
           group_folder: data.groupFolder,
-          chat_jid: data.chatJid,
+          chat_jid: targetJid,
           prompt: data.prompt,
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
@@ -243,7 +253,7 @@ async function processTaskIpc(data: {
           status: 'active',
           created_at: new Date().toISOString()
         });
-        logger.info({ taskId, groupFolder: data.groupFolder }, 'Task created via IPC');
+        logger.info({ taskId, groupFolder: data.groupFolder, chatJid: targetJid }, 'Task created via IPC');
       }
       break;
 
