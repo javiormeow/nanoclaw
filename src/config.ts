@@ -13,6 +13,5 @@ export const MAIN_GROUP_FOLDER = 'main';
 
 export const CONTAINER_IMAGE = process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
 export const CONTAINER_TIMEOUT = parseInt(process.env.CONTAINER_TIMEOUT || '300000', 10);
-export const IPC_POLL_INTERVAL = 1000;
 
 export const TRIGGER_PATTERN = new RegExp(`^@${ASSISTANT_NAME}\\b`, 'i');
