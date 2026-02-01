@@ -101,11 +101,12 @@ function buildVolumeMounts(group: RegisteredGroup, isMain: boolean): VolumeMount
     });
   }
 
-  const ipcDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(path.join(ipcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(ipcDir, 'tasks'), { recursive: true });
+  // Per-group IPC directory for isolation - each group only sees its own data
+  const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'task_ops'), { recursive: true });
   mounts.push({
-    hostPath: ipcDir,
+    hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
     readonly: false
   });
@@ -337,6 +338,10 @@ export async function runContainerAgent(
   });
 }
 
+/**
+ * Write per-group task snapshots to isolate task data between groups.
+ * Each group only sees its own tasks - prevents cross-group data leakage.
+ */
 export function writeTasksSnapshot(tasks: Array<{
   id: string;
   groupFolder: string;
@@ -346,8 +351,35 @@ export function writeTasksSnapshot(tasks: Array<{
   status: string;
   next_run: string | null;
 }>): void {
-  const ipcDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(ipcDir, { recursive: true });
-  const tasksFile = path.join(ipcDir, 'current_tasks.json');
-  fs.writeFileSync(tasksFile, JSON.stringify(tasks, null, 2));
+  // Group tasks by folder
+  const tasksByGroup: Record<string, typeof tasks> = {};
+  for (const task of tasks) {
+    if (!tasksByGroup[task.groupFolder]) {
+      tasksByGroup[task.groupFolder] = [];
+    }
+    tasksByGroup[task.groupFolder].push(task);
+  }
+
+  // Write each group's tasks to its own IPC directory
+  for (const [groupFolder, groupTasks] of Object.entries(tasksByGroup)) {
+    const groupIpcDir = path.join(DATA_DIR, 'ipc', groupFolder);
+    fs.mkdirSync(groupIpcDir, { recursive: true });
+    const tasksFile = path.join(groupIpcDir, 'tasks.json');
+    fs.writeFileSync(tasksFile, JSON.stringify(groupTasks, null, 2));
+  }
+
+  // Also write empty files for groups with no tasks (to clear stale data)
+  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+  if (fs.existsSync(ipcBaseDir)) {
+    const existingDirs = fs.readdirSync(ipcBaseDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && d.name !== 'errors')
+      .map(d => d.name);
+
+    for (const dir of existingDirs) {
+      if (!tasksByGroup[dir]) {
+        const tasksFile = path.join(ipcBaseDir, dir, 'tasks.json');
+        fs.writeFileSync(tasksFile, JSON.stringify([], null, 2));
+      }
+    }
+  }
 }

@@ -145,53 +145,73 @@ async function sendMessage(jid: string, text: string): Promise<void> {
 }
 
 function startIpcWatcher(): void {
-  const messagesDir = path.join(DATA_DIR, 'ipc', 'messages');
-  const tasksDir = path.join(DATA_DIR, 'ipc', 'tasks');
-
-  fs.mkdirSync(messagesDir, { recursive: true });
-  fs.mkdirSync(tasksDir, { recursive: true });
+  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+  fs.mkdirSync(ipcBaseDir, { recursive: true });
 
   const processIpcFiles = async () => {
+    // Get all group IPC directories
+    let groupDirs: string[] = [];
     try {
-      const messageFiles = fs.readdirSync(messagesDir).filter(f => f.endsWith('.json'));
-      for (const file of messageFiles) {
-        const filePath = path.join(messagesDir, file);
-        try {
-          const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-          if (data.type === 'message' && data.chatJid && data.text) {
-            await sendMessage(data.chatJid, `${ASSISTANT_NAME}: ${data.text}`);
-            logger.info({ chatJid: data.chatJid }, 'IPC message sent');
-          }
-          fs.unlinkSync(filePath);
-        } catch (err) {
-          logger.error({ file, err }, 'Error processing IPC message');
-          // Move to error directory instead of deleting
-          const errorDir = path.join(DATA_DIR, 'ipc', 'errors');
-          fs.mkdirSync(errorDir, { recursive: true });
-          fs.renameSync(filePath, path.join(errorDir, file));
-        }
+      if (fs.existsSync(ipcBaseDir)) {
+        groupDirs = fs.readdirSync(ipcBaseDir, { withFileTypes: true })
+          .filter(d => d.isDirectory() && d.name !== 'errors')
+          .map(d => d.name);
       }
     } catch (err) {
-      logger.error({ err }, 'Error reading IPC messages directory');
+      logger.error({ err }, 'Error reading IPC base directory');
     }
 
-    try {
-      const taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.json'));
-      for (const file of taskFiles) {
-        const filePath = path.join(tasksDir, file);
-        try {
-          const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-          await processTaskIpc(data);
-          fs.unlinkSync(filePath);
-        } catch (err) {
-          logger.error({ file, err }, 'Error processing IPC task');
-          const errorDir = path.join(DATA_DIR, 'ipc', 'errors');
-          fs.mkdirSync(errorDir, { recursive: true });
-          fs.renameSync(filePath, path.join(errorDir, file));
+    // Process messages and task_ops from each group's IPC directory
+    for (const groupFolder of groupDirs) {
+      const messagesDir = path.join(ipcBaseDir, groupFolder, 'messages');
+      const taskOpsDir = path.join(ipcBaseDir, groupFolder, 'task_ops');
+
+      // Process messages
+      try {
+        if (fs.existsSync(messagesDir)) {
+          const messageFiles = fs.readdirSync(messagesDir).filter(f => f.endsWith('.json'));
+          for (const file of messageFiles) {
+            const filePath = path.join(messagesDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              if (data.type === 'message' && data.chatJid && data.text) {
+                await sendMessage(data.chatJid, `${ASSISTANT_NAME}: ${data.text}`);
+                logger.info({ chatJid: data.chatJid, groupFolder }, 'IPC message sent');
+              }
+              fs.unlinkSync(filePath);
+            } catch (err) {
+              logger.error({ file, groupFolder, err }, 'Error processing IPC message');
+              const errorDir = path.join(ipcBaseDir, 'errors');
+              fs.mkdirSync(errorDir, { recursive: true });
+              fs.renameSync(filePath, path.join(errorDir, `${groupFolder}-${file}`));
+            }
+          }
         }
+      } catch (err) {
+        logger.error({ err, groupFolder }, 'Error reading IPC messages directory');
       }
-    } catch (err) {
-      logger.error({ err }, 'Error reading IPC tasks directory');
+
+      // Process task operations
+      try {
+        if (fs.existsSync(taskOpsDir)) {
+          const taskFiles = fs.readdirSync(taskOpsDir).filter(f => f.endsWith('.json'));
+          for (const file of taskFiles) {
+            const filePath = path.join(taskOpsDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              await processTaskIpc(data);
+              fs.unlinkSync(filePath);
+            } catch (err) {
+              logger.error({ file, groupFolder, err }, 'Error processing IPC task');
+              const errorDir = path.join(ipcBaseDir, 'errors');
+              fs.mkdirSync(errorDir, { recursive: true });
+              fs.renameSync(filePath, path.join(errorDir, `${groupFolder}-${file}`));
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err, groupFolder }, 'Error reading IPC task_ops directory');
+      }
     }
 
     setTimeout(processIpcFiles, IPC_POLL_INTERVAL);

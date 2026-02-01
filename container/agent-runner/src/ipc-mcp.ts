@@ -10,7 +10,8 @@ import path from 'path';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
-const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const TASK_OPS_DIR = path.join(IPC_DIR, 'task_ops');
+const TASKS_FILE = path.join(IPC_DIR, 'tasks.json');
 
 export interface IpcMcpContext {
   chatJid: string;
@@ -94,7 +95,7 @@ IMPORTANT - schedule_value format depends on schedule_type:
             timestamp: new Date().toISOString()
           };
 
-          const filename = writeIpcFile(TASKS_DIR, data);
+          const filename = writeIpcFile(TASK_OPS_DIR, data);
 
           return {
             content: [{
@@ -105,16 +106,14 @@ IMPORTANT - schedule_value format depends on schedule_type:
         }
       ),
 
-      // Reads from current_tasks.json which host keeps updated
+      // Reads from per-group tasks.json which host keeps updated
       tool(
         'list_tasks',
-        'List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group\'s tasks.',
+        'List all scheduled tasks for this group.',
         {},
         async () => {
-          const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
-
           try {
-            if (!fs.existsSync(tasksFile)) {
+            if (!fs.existsSync(TASKS_FILE)) {
               return {
                 content: [{
                   type: 'text',
@@ -123,11 +122,7 @@ IMPORTANT - schedule_value format depends on schedule_type:
               };
             }
 
-            const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
-
-            const tasks = isMain
-              ? allTasks
-              : allTasks.filter((t: { groupFolder: string }) => t.groupFolder === groupFolder);
+            const tasks = JSON.parse(fs.readFileSync(TASKS_FILE, 'utf-8'));
 
             if (tasks.length === 0) {
               return {
@@ -174,7 +169,7 @@ IMPORTANT - schedule_value format depends on schedule_type:
             timestamp: new Date().toISOString()
           };
 
-          writeIpcFile(TASKS_DIR, data);
+          writeIpcFile(TASK_OPS_DIR, data);
 
           return {
             content: [{
@@ -200,7 +195,7 @@ IMPORTANT - schedule_value format depends on schedule_type:
             timestamp: new Date().toISOString()
           };
 
-          writeIpcFile(TASKS_DIR, data);
+          writeIpcFile(TASK_OPS_DIR, data);
 
           return {
             content: [{
@@ -226,7 +221,7 @@ IMPORTANT - schedule_value format depends on schedule_type:
             timestamp: new Date().toISOString()
           };
 
-          writeIpcFile(TASKS_DIR, data);
+          writeIpcFile(TASK_OPS_DIR, data);
 
           return {
             content: [{
