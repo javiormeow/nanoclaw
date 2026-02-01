@@ -20,6 +20,10 @@ const logger = pino({
   transport: { target: 'pino-pretty', options: { colorize: true } }
 });
 
+// Sentinel markers for robust output parsing (must match agent-runner)
+const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
+const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -297,9 +301,23 @@ export async function runContainerAgent(
       }
 
       try {
-        // Last non-empty line is the JSON output
-        const lines = stdout.trim().split('\n');
-        const jsonLine = lines[lines.length - 1];
+        // Extract JSON between sentinel markers for robust parsing
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+
+        let jsonLine: string;
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          // Extract content between markers
+          jsonLine = stdout
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
+        } else {
+          // Fallback: last non-empty line (for backwards compatibility)
+          logger.warn({ group: group.name }, 'Sentinel markers not found, falling back to last-line parsing');
+          const lines = stdout.trim().split('\n');
+          jsonLine = lines[lines.length - 1];
+        }
+
         const output: ContainerOutput = JSON.parse(jsonLine);
 
         logger.info({

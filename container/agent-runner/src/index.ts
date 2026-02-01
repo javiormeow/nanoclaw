@@ -45,8 +45,16 @@ async function readStdin(): Promise<string> {
   });
 }
 
+// Sentinel markers for robust output parsing
+const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
+const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
 function writeOutput(output: ContainerOutput): void {
+  // Use sentinel markers so the host can reliably find the JSON
+  // even if there's extra logging before or after
+  console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
+  console.log(OUTPUT_END_MARKER);
 }
 
 function log(message: string): void {
