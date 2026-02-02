@@ -99,7 +99,7 @@ export const MOUNT_ALLOWLIST_PATH = path.join(HOME_DIR, '.config', 'nanoclaw', '
 
 ## Step 3: Create Mount Security Module
 
-Create the file `src/mount-security.ts` with the content from the resource file `.claude/skills/add-mount/mount-security.ts.resource`.
+Create the file `src/mount-security.ts` with the content from `.claude/skills/add-mount/mount-security.ts`.
 
 This file provides:
 - `loadMountAllowlist()` - Loads and caches the allowlist
@@ -107,7 +107,7 @@ This file provides:
 - `validateAdditionalMounts()` - Validates all mounts for a group
 - `generateAllowlistTemplate()` - Generates a template config
 
-Read the full implementation from `.claude/skills/add-mount/mount-security.ts.resource` and write it to `src/mount-security.ts`.
+Read the full implementation from `.claude/skills/add-mount/mount-security.ts` and write it to `src/mount-security.ts`.
 
 ---
 
