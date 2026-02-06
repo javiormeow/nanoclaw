@@ -8,6 +8,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
+import { CronExpressionParser } from 'cron-parser';
 
 import {
   ASSISTANT_NAME,
@@ -26,6 +27,8 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  createTask,
+  deleteTask,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -43,6 +46,7 @@ import {
   storeChatMetadata,
   storeMessage,
   updateChatName,
+  updateTask,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -92,7 +96,12 @@ function loadState(): void {
   // Load from SQLite (migration from JSON happens in initDatabase)
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
-  lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
+  try {
+    lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
+  } catch {
+    logger.warn('Corrupted last_agent_timestamp in DB, resetting');
+    lastAgentTimestamp = {};
+  }
   sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
   logger.info(
@@ -183,9 +192,9 @@ function getAvailableGroups(): AvailableGroup[] {
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
  */
-async function processGroupMessages(chatJid: string): Promise<void> {
+async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
-  if (!group) return;
+  if (!group) return true;
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
@@ -197,14 +206,14 @@ async function processGroupMessages(chatJid: string): Promise<void> {
     ASSISTANT_NAME,
   );
 
-  if (missedMessages.length === 0) return;
+  if (missedMessages.length === 0) return true;
 
   // For non-main groups, check if any message has the trigger
   if (!isMainGroup) {
     const hasTrigger = missedMessages.some((m) =>
       TRIGGER_PATTERN.test(m.content.trim()),
     );
-    if (!hasTrigger) return;
+    if (!hasTrigger) return true;
   }
 
   const lines = missedMessages.map((m) => {
@@ -233,7 +242,9 @@ async function processGroupMessages(chatJid: string): Promise<void> {
       missedMessages[missedMessages.length - 1].timestamp;
     saveState();
     await sendMessage(chatJid, `${ASSISTANT_NAME}: ${response}`);
+    return true;
   }
+  return false;
 }
 
 async function runAgent(
@@ -279,7 +290,7 @@ async function runAgent(
         chatJid,
         isMain,
       },
-      (proc) => queue.registerProcess(chatJid, proc),
+      (proc, containerName) => queue.registerProcess(chatJid, proc, containerName),
     );
 
     if (output.newSessionId) {
@@ -453,15 +464,6 @@ async function processTaskIpc(
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
 ): Promise<void> {
-  // Import db functions dynamically to avoid circular deps
-  const {
-    createTask,
-    updateTask,
-    deleteTask,
-    getTaskById: getTask,
-  } = await import('./db.js');
-  const { CronExpressionParser } = await import('cron-parser');
-
   switch (data.type) {
     case 'schedule_task':
       if (
@@ -557,7 +559,7 @@ async function processTaskIpc(
 
     case 'pause_task':
       if (data.taskId) {
-        const task = getTask(data.taskId);
+        const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'paused' });
           logger.info(
@@ -575,7 +577,7 @@ async function processTaskIpc(
 
     case 'resume_task':
       if (data.taskId) {
-        const task = getTask(data.taskId);
+        const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'active' });
           logger.info(
@@ -593,7 +595,7 @@ async function processTaskIpc(
 
     case 'cancel_task':
       if (data.taskId) {
-        const task = getTask(data.taskId);
+        const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           deleteTask(data.taskId);
           logger.info(
@@ -619,9 +621,7 @@ async function processTaskIpc(
         await syncGroupMetadata(true);
         // Write updated snapshot immediately
         const availableGroups = getAvailableGroups();
-        const { writeGroupsSnapshot: writeGroups } =
-          await import('./container-runner.js');
-        writeGroups(
+        writeGroupsSnapshot(
           sourceGroup,
           true,
           availableGroups,
@@ -737,10 +737,11 @@ async function connectWhatsApp(): Promise<void> {
         registeredGroups: () => registeredGroups,
         getSessions: () => sessions,
         queue,
-        onProcess: (groupJid, proc) => queue.registerProcess(groupJid, proc),
+        onProcess: (groupJid, proc, containerName) => queue.registerProcess(groupJid, proc, containerName),
       });
       startIpcWatcher();
       startMessageLoop();
+      recoverPendingMessages();
     }
   });
 
@@ -825,8 +826,6 @@ async function startMessageLoop(): Promise<void> {
  * Handles crash between advancing lastTimestamp and processing messages.
  */
 function recoverPendingMessages(): void {
-  queue.setProcessMessagesFn(processGroupMessages);
-
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
     const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
@@ -903,7 +902,6 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  recoverPendingMessages();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

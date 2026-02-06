@@ -184,7 +184,7 @@ function buildContainerArgs(mounts: VolumeMount[], containerName: string): strin
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
-  onProcess: (proc: ChildProcess) => void,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -227,7 +227,7 @@ export async function runContainerAgent(
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    onProcess(container);
+    onProcess(container, containerName);
 
     let stdout = '';
     let stderr = '';

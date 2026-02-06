@@ -26,7 +26,7 @@ export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
-  onProcess: (groupJid: string, proc: ChildProcess) => void;
+  onProcess: (groupJid: string, proc: ChildProcess, containerName: string) => void;
 }
 
 async function runTask(
@@ -98,7 +98,7 @@ async function runTask(
         chatJid: task.chat_jid,
         isMain,
       },
-      (proc) => deps.onProcess(task.chat_jid, proc),
+      (proc, containerName) => deps.onProcess(task.chat_jid, proc, containerName),
     );
 
     if (output.status === 'error') {

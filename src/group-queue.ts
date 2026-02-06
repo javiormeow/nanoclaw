@@ -1,4 +1,4 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, exec } from 'child_process';
 
 import { MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
@@ -14,13 +14,14 @@ interface GroupState {
   pendingMessages: boolean;
   pendingTasks: QueuedTask[];
   process: ChildProcess | null;
+  containerName: string | null;
 }
 
 export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
   private waitingGroups: string[] = [];
-  private processMessagesFn: ((groupJid: string) => Promise<void>) | null =
+  private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
 
@@ -32,13 +33,14 @@ export class GroupQueue {
         pendingMessages: false,
         pendingTasks: [],
         process: null,
+        containerName: null,
       };
       this.groups.set(groupJid, state);
     }
     return state;
   }
 
-  setProcessMessagesFn(fn: (groupJid: string) => Promise<void>): void {
+  setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
   }
 
@@ -101,9 +103,10 @@ export class GroupQueue {
     this.runTask(groupJid, { id: taskId, groupJid, fn });
   }
 
-  registerProcess(groupJid: string, proc: ChildProcess): void {
+  registerProcess(groupJid: string, proc: ChildProcess, containerName: string): void {
     const state = this.getGroup(groupJid);
     state.process = proc;
+    state.containerName = containerName;
   }
 
   private async runForGroup(
@@ -122,13 +125,27 @@ export class GroupQueue {
 
     try {
       if (this.processMessagesFn) {
-        await this.processMessagesFn(groupJid);
+        const success = await this.processMessagesFn(groupJid);
+        if (!success) {
+          logger.info({ groupJid }, 'Processing failed, scheduling retry');
+          setTimeout(() => {
+            if (!this.shuttingDown) {
+              this.enqueueMessageCheck(groupJid);
+            }
+          }, 5000);
+        }
       }
     } catch (err) {
       logger.error({ groupJid, err }, 'Error processing messages for group');
+      setTimeout(() => {
+        if (!this.shuttingDown) {
+          this.enqueueMessageCheck(groupJid);
+        }
+      }, 5000);
     } finally {
       state.active = false;
       state.process = null;
+      state.containerName = null;
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -151,6 +168,7 @@ export class GroupQueue {
     } finally {
       state.active = false;
       state.process = null;
+      state.containerName = null;
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -205,19 +223,24 @@ export class GroupQueue {
     );
 
     // Collect all active processes
-    const activeProcs: Array<{ jid: string; proc: ChildProcess }> = [];
+    const activeProcs: Array<{ jid: string; proc: ChildProcess; containerName: string | null }> = [];
     for (const [jid, state] of this.groups) {
       if (state.process && !state.process.killed) {
-        activeProcs.push({ jid, proc: state.process });
+        activeProcs.push({ jid, proc: state.process, containerName: state.containerName });
       }
     }
 
     if (activeProcs.length === 0) return;
 
-    // Send SIGTERM to all
-    for (const { jid, proc } of activeProcs) {
-      logger.info({ jid, pid: proc.pid }, 'Sending SIGTERM to container');
-      proc.kill('SIGTERM');
+    // Stop all active containers gracefully
+    for (const { jid, proc, containerName } of activeProcs) {
+      if (containerName) {
+        logger.info({ jid, containerName }, 'Stopping container');
+        exec(`container stop ${containerName}`);
+      } else {
+        logger.info({ jid, pid: proc.pid }, 'Sending SIGTERM to process');
+        proc.kill('SIGTERM');
+      }
     }
 
     // Wait for grace period
