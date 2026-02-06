@@ -92,7 +92,14 @@ function loadState(): void {
   // Load from SQLite (migration from JSON happens in initDatabase)
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
-  lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
+  if (agentTs) {
+    try {
+      lastAgentTimestamp = JSON.parse(agentTs);
+    } catch {
+      logger.warn('Corrupt last_agent_timestamp in DB, resetting');
+      lastAgentTimestamp = {};
+    }
+  }
   sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
   logger.info(
@@ -741,6 +748,7 @@ async function connectWhatsApp(): Promise<void> {
       });
       startIpcWatcher();
       startMessageLoop();
+      recoverPendingMessages();
     }
   });
 
@@ -903,7 +911,6 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  recoverPendingMessages();
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

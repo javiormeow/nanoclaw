@@ -463,15 +463,21 @@ export function getRegisteredGroup(
       }
     | undefined;
   if (!row) return undefined;
+  let containerConfig: RegisteredGroup['containerConfig'];
+  if (row.container_config) {
+    try {
+      containerConfig = JSON.parse(row.container_config);
+    } catch {
+      // Corrupt config in DB — ignore and use defaults
+    }
+  }
   return {
     jid: row.jid,
     name: row.name,
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
+    containerConfig,
   };
 }
 
@@ -505,14 +511,20 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
+    let containerConfig: RegisteredGroup['containerConfig'];
+    if (row.container_config) {
+      try {
+        containerConfig = JSON.parse(row.container_config);
+      } catch {
+        // Corrupt config in DB — ignore and use defaults
+      }
+    }
     result[row.jid] = {
       name: row.name,
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
+      containerConfig,
     };
   }
   return result;
@@ -526,7 +538,7 @@ function migrateJsonState(): void {
     if (!fs.existsSync(filePath)) return null;
     try {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      fs.renameSync(filePath, `${filePath}.migrated`);
+      fs.unlinkSync(filePath);
       return data;
     } catch {
       return null;
