@@ -20,7 +20,7 @@ You have two ways to send messages to the user or group:
 
 Your output **internalLog** is information that will be logged internally but not sent to the user or group.
 
-For requests that involve significant work, consider sending a quick acknowledgment via mcp__nanoclaw__send_message so the user knows you're working on it.
+For requests that can take time, consider sending a quick acknowledgment if appropriate via mcp__nanoclaw__send_message so the user knows you're working on it.
 
 ## Memory
 
