@@ -832,6 +832,24 @@ function ensureContainerSystemRunning(): void {
       throw new Error('Apple Container system is required but failed to start');
     }
   }
+
+  // Clean up stopped NanoClaw containers from previous runs
+  try {
+    const output = execSync('container ls -a --format {{.Names}}', {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+    const stale = output
+      .split('\n')
+      .map((n) => n.trim())
+      .filter((n) => n.startsWith('nanoclaw-'));
+    if (stale.length > 0) {
+      execSync(`container rm ${stale.join(' ')}`, { stdio: 'pipe' });
+      logger.info({ count: stale.length }, 'Cleaned up stopped containers');
+    }
+  } catch {
+    // No stopped containers or ls/rm not supported
+  }
 }
 
 async function main(): Promise<void> {
