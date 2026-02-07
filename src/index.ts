@@ -266,7 +266,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.result) {
       const text = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
       logger.info({ group: group.name }, `Agent output: ${text.slice(0, 200)}`);
-      // Send result text to WhatsApp (agent may also send via MCP tool during execution)
       await sendMessage(chatJid, `${ASSISTANT_NAME}: ${text}`);
     }
 
