@@ -4,7 +4,6 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  ASSISTANT_NAME,
   GROUPS_DIR,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
@@ -23,7 +22,6 @@ import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
-  sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
@@ -105,10 +103,8 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      if (output.result.outputType === 'message' && output.result.userMessage) {
-        await deps.sendMessage(task.chat_jid, `${ASSISTANT_NAME}: ${output.result.userMessage}`);
-      }
-      result = output.result.userMessage || output.result.internalLog || null;
+      // Messages are sent via MCP tool (IPC), result text is just logged
+      result = output.result;
     }
 
     logger.info(

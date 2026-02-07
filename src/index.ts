@@ -13,6 +13,7 @@ import { CronExpressionParser } from 'cron-parser';
 import {
   ASSISTANT_NAME,
   DATA_DIR,
+  IDLE_TIMEOUT,
   IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
@@ -21,8 +22,8 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import {
-  AgentResponse,
   AvailableGroup,
+  ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
@@ -51,7 +52,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { RegisteredGroup } from './types.js';
+import { NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -67,6 +68,9 @@ let lidToPhoneMap: Record<string, string> = {};
 let messageLoopRunning = false;
 let ipcWatcherRunning = false;
 let groupSyncTimerStarted = false;
+// WhatsApp connection state and outgoing message queue
+let waConnected = false;
+const outgoingQueue: Array<{ jid: string; text: string }> = [];
 
 const queue = new GroupQueue();
 
@@ -189,9 +193,28 @@ function getAvailableGroups(): AvailableGroup[] {
     }));
 }
 
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatMessages(messages: NewMessage[]): string {
+  const lines = messages.map((m) =>
+    `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
+  );
+  return `<messages>\n${lines.join('\n')}\n</messages>`;
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
+ *
+ * Uses streaming output: agent results are sent to WhatsApp as they arrive.
+ * The container stays alive for IDLE_TIMEOUT after each result, allowing
+ * rapid-fire messages to be piped in without spawning a new container.
  */
 async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
@@ -209,54 +232,63 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
-  // For non-main groups, check if any message has the trigger
-  if (!isMainGroup) {
+  // For non-main groups, check if any message has the trigger (unless alwaysRespond)
+  if (!isMainGroup && !group.alwaysRespond) {
     const hasTrigger = missedMessages.some((m) =>
       TRIGGER_PATTERN.test(m.content.trim()),
     );
     if (!hasTrigger) return true;
   }
 
-  const lines = missedMessages.map((m) => {
-    const escapeXml = (s: string) =>
-      s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`;
-  });
-  const prompt = `<messages>\n${lines.join('\n')}\n</messages>`;
+  const prompt = formatMessages(missedMessages);
 
   logger.info(
     { group: group.name, messageCount: missedMessages.length },
     'Processing messages',
   );
 
-  await setTyping(chatJid, true);
-  const response = await runAgent(group, prompt, chatJid);
-  await setTyping(chatJid, false);
+  // Track idle timer for closing stdin when agent is idle
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
-  if (response === 'error') {
-    // Container or agent error — signal failure so queue can retry with backoff
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      logger.debug({ group: group.name }, 'Idle timeout, closing container stdin');
+      queue.closeStdin(chatJid);
+    }, IDLE_TIMEOUT);
+  };
+
+  await setTyping(chatJid, true);
+  let hadError = false;
+
+  const output = await runAgent(group, prompt, chatJid, async (result) => {
+    // Streaming output callback — called for each agent result
+    if (result.result) {
+      const text = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+      logger.info({ group: group.name }, `Agent output: ${text.slice(0, 200)}`);
+      // Send result text to WhatsApp (agent may also send via MCP tool during execution)
+      await sendMessage(chatJid, `${ASSISTANT_NAME}: ${text}`);
+    }
+
+    if (result.status === 'error') {
+      hadError = true;
+    }
+
+    // Agent produced a result — it's now idle, start/reset the idle timer
+    resetIdleTimer();
+  });
+
+  await setTyping(chatJid, false);
+  if (idleTimer) clearTimeout(idleTimer);
+
+  if (output === 'error' || hadError) {
     return false;
   }
 
-  // Agent processed messages successfully (whether it responded or stayed silent)
+  // Agent processed messages successfully
   lastAgentTimestamp[chatJid] =
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
-
-  if (response.outputType === 'message' && response.userMessage) {
-    await sendMessage(chatJid, `${ASSISTANT_NAME}: ${response.userMessage}`);
-  }
-
-  if (response.internalLog) {
-    logger.info(
-      { group: group.name, outputType: response.outputType },
-      `Agent: ${response.internalLog}`,
-    );
-  }
 
   return true;
 }
@@ -265,7 +297,8 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
-): Promise<AgentResponse | 'error'> {
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
 
@@ -294,6 +327,17 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  // Wrap onOutput to track session ID from streamed results
+  const wrappedOnOutput = onOutput
+    ? async (output: ContainerOutput) => {
+        if (output.newSessionId) {
+          sessions[group.folder] = output.newSessionId;
+          setSession(group.folder, output.newSessionId);
+        }
+        await onOutput(output);
+      }
+    : undefined;
+
   try {
     const output = await runContainerAgent(
       group,
@@ -304,7 +348,8 @@ async function runAgent(
         chatJid,
         isMain,
       },
-      (proc, containerName) => queue.registerProcess(chatJid, proc, containerName),
+      (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
+      wrappedOnOutput,
     );
 
     if (output.newSessionId) {
@@ -320,7 +365,7 @@ async function runAgent(
       return 'error';
     }
 
-    return output.result ?? { outputType: 'log' };
+    return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
@@ -328,11 +373,28 @@ async function runAgent(
 }
 
 async function sendMessage(jid: string, text: string): Promise<void> {
+  if (!waConnected) {
+    outgoingQueue.push({ jid, text });
+    logger.info({ jid, length: text.length, queueSize: outgoingQueue.length }, 'WA disconnected, message queued');
+    return;
+  }
   try {
     await sock.sendMessage(jid, { text });
     logger.info({ jid, length: text.length }, 'Message sent');
   } catch (err) {
-    logger.error({ jid, err }, 'Failed to send message');
+    // If send fails, queue it for retry on reconnect
+    outgoingQueue.push({ jid, text });
+    logger.warn({ jid, err, queueSize: outgoingQueue.length }, 'Failed to send, message queued');
+  }
+}
+
+async function flushOutgoingQueue(): Promise<void> {
+  if (outgoingQueue.length === 0) return;
+  logger.info({ count: outgoingQueue.length }, 'Flushing outgoing message queue');
+  // Drain a copy so new failures can re-queue
+  const pending = outgoingQueue.splice(0);
+  for (const { jid, text } of pending) {
+    await sendMessage(jid, text);
   }
 }
 
@@ -710,18 +772,27 @@ async function connectWhatsApp(): Promise<void> {
     }
 
     if (connection === 'close') {
+      waConnected = false;
       const reason = (lastDisconnect?.error as any)?.output?.statusCode;
       const shouldReconnect = reason !== DisconnectReason.loggedOut;
-      logger.info({ reason, shouldReconnect }, 'Connection closed');
+      logger.info({ reason, shouldReconnect, queuedMessages: outgoingQueue.length }, 'Connection closed');
 
       if (shouldReconnect) {
         logger.info('Reconnecting...');
-        connectWhatsApp();
+        connectWhatsApp().catch((err) => {
+          logger.error({ err }, 'Failed to reconnect, retrying in 5s');
+          setTimeout(() => {
+            connectWhatsApp().catch((err2) => {
+              logger.error({ err: err2 }, 'Reconnection retry failed');
+            });
+          }, 5000);
+        });
       } else {
         logger.info('Logged out. Run /setup to re-authenticate.');
         process.exit(0);
       }
     } else if (connection === 'open') {
+      waConnected = true;
       logger.info('Connected to WhatsApp');
 
       // Build LID to phone mapping from auth state for self-chat translation
@@ -733,6 +804,11 @@ async function connectWhatsApp(): Promise<void> {
           logger.debug({ lidUser, phoneUser }, 'LID to phone mapping set');
         }
       }
+
+      // Flush any messages queued while disconnected
+      flushOutgoingQueue().catch((err) =>
+        logger.error({ err }, 'Failed to flush outgoing queue'),
+      );
 
       // Sync group metadata on startup (respects 24h cache)
       syncGroupMetadata().catch((err) =>
@@ -748,7 +824,6 @@ async function connectWhatsApp(): Promise<void> {
         }, GROUP_SYNC_INTERVAL_MS);
       }
       startSchedulerLoop({
-        sendMessage,
         registeredGroups: () => registeredGroups,
         getSessions: () => sessions,
         queue,
@@ -817,14 +892,33 @@ async function startMessageLoop(): Promise<void> {
         lastTimestamp = newTimestamp;
         saveState();
 
-        // Deduplicate by group and enqueue
-        const groupsWithMessages = new Set<string>();
+        // Deduplicate by group
+        const messagesByGroup = new Map<string, NewMessage[]>();
         for (const msg of messages) {
-          groupsWithMessages.add(msg.chat_jid);
+          const existing = messagesByGroup.get(msg.chat_jid);
+          if (existing) {
+            existing.push(msg);
+          } else {
+            messagesByGroup.set(msg.chat_jid, [msg]);
+          }
         }
 
-        for (const chatJid of groupsWithMessages) {
-          queue.enqueueMessageCheck(chatJid);
+        for (const [chatJid, groupMessages] of messagesByGroup) {
+          // Try to pipe messages to active container first
+          const formatted = formatMessages(groupMessages);
+          if (queue.sendMessage(chatJid, formatted)) {
+            logger.debug(
+              { chatJid, count: groupMessages.length },
+              'Piped messages to active container',
+            );
+            // Update lastAgentTimestamp since the agent will process these
+            lastAgentTimestamp[chatJid] =
+              groupMessages[groupMessages.length - 1].timestamp;
+            saveState();
+          } else {
+            // No active container — enqueue for a new one
+            queue.enqueueMessageCheck(chatJid);
+          }
         }
       }
     } catch (err) {
@@ -891,8 +985,26 @@ function ensureContainerSystemRunning(): void {
     }
   }
 
-  // Clean up stopped NanoClaw containers from previous runs
+  // Kill and clean up orphaned NanoClaw containers from previous runs
   try {
+    // Stop any running containers first (orphans from previous service instance)
+    const running = execSync('container ls --format {{.Names}}', {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
+    const runningContainers = running
+      .split('\n')
+      .map((n) => n.trim())
+      .filter((n) => n.startsWith('nanoclaw-'));
+    if (runningContainers.length > 0) {
+      execSync(`container stop ${runningContainers.join(' ')}`, { stdio: 'pipe' });
+      logger.info({ count: runningContainers.length }, 'Stopped orphaned containers');
+    }
+  } catch {
+    // No running containers or stop not supported
+  }
+  try {
+    // Remove stopped containers
     const output = execSync('container ls -a --format {{.Names}}', {
       stdio: ['pipe', 'pipe', 'pipe'],
       encoding: 'utf-8',

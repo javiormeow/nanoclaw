@@ -38,6 +38,7 @@ export interface RegisteredGroup {
   trigger: string;
   added_at: string;
   containerConfig?: ContainerConfig;
+  alwaysRespond?: boolean;
 }
 
 export interface NewMessage {

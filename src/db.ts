@@ -94,9 +94,17 @@ export function initDatabase(): void {
       folder TEXT NOT NULL UNIQUE,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
-      container_config TEXT
+      container_config TEXT,
+      always_respond INTEGER NOT NULL DEFAULT 0
     );
   `);
+
+  // Add always_respond column if missing (existing DBs)
+  try {
+    db.prepare('SELECT always_respond FROM registered_groups LIMIT 0').run();
+  } catch {
+    db.prepare('ALTER TABLE registered_groups ADD COLUMN always_respond INTEGER NOT NULL DEFAULT 0').run();
+  }
 
   // Migrate from JSON files if they exist
   migrateJsonState();
@@ -460,6 +468,7 @@ export function getRegisteredGroup(
         trigger_pattern: string;
         added_at: string;
         container_config: string | null;
+        always_respond: number;
       }
     | undefined;
   if (!row) return undefined;
@@ -472,6 +481,7 @@ export function getRegisteredGroup(
     containerConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
+    alwaysRespond: row.always_respond === 1,
   };
 }
 
@@ -480,8 +490,8 @@ export function setRegisteredGroup(
   group: RegisteredGroup,
 ): void {
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, always_respond)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -489,6 +499,7 @@ export function setRegisteredGroup(
     group.trigger,
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
+    group.alwaysRespond ? 1 : 0,
   );
 }
 
@@ -502,6 +513,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     trigger_pattern: string;
     added_at: string;
     container_config: string | null;
+    always_respond: number;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -513,6 +525,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       containerConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,
+      alwaysRespond: row.always_respond === 1,
     };
   }
   return result;
