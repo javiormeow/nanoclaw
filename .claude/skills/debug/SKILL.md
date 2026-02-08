@@ -19,8 +19,8 @@ src/container-runner.ts               container/agent-runner/
     │                                      │
     ├── data/env/env ──────────────> /workspace/env-dir/env
     ├── groups/{folder} ───────────> /workspace/group
-    ├── data/ipc ──────────────────> /workspace/ipc
-    ├── ~/.claude/ ────────────────> /home/node/.claude/ (sessions)
+    ├── data/ipc/{folder} ────────> /workspace/ipc
+    ├── data/sessions/{folder}/.claude/ ──> /home/node/.claude/ (isolated per-group)
     └── (main only) project root ──> /workspace/project
 ```
 
@@ -82,7 +82,7 @@ cat .env  # Should show one of:
 
 **Apple Container Bug:** Environment variables passed via `-e` are lost when using `-i` (interactive/piped stdin).
 
-**Workaround:** The system mounts `.env` as a file and sources it inside the container.
+**Workaround:** The system extracts only authentication variables (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) from `.env` and mounts them for sourcing inside the container. Other env vars are not exposed.
 
 To verify env vars are reaching the container:
 ```bash
@@ -113,14 +113,16 @@ container run --rm --entrypoint /bin/bash nanoclaw-agent:latest -c 'ls -la /work
 Expected structure:
 ```
 /workspace/
-├── env-dir/env     # Environment file (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)
-├── group/          # Current group folder (cwd)
-├── project/        # Project root (main channel only)
-├── global/         # Global CLAUDE.md (non-main only)
-├── ipc/            # Inter-process communication
-│   ├── messages/   # Outgoing WhatsApp messages
-│   └── tasks/      # Scheduled task commands
-└── extra/          # Additional custom mounts
+├── env-dir/env           # Environment file (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)
+├── group/                # Current group folder (cwd)
+├── project/              # Project root (main channel only)
+├── global/               # Global CLAUDE.md (non-main only)
+├── ipc/                  # Inter-process communication
+│   ├── messages/         # Outgoing WhatsApp messages
+│   ├── tasks/            # Scheduled task commands
+│   ├── current_tasks.json    # Read-only: scheduled tasks visible to this group
+│   └── available_groups.json # Read-only: WhatsApp groups for activation (main only)
+└── extra/                # Additional custom mounts
 ```
 
 ### 4. Permission Issues
@@ -169,14 +171,7 @@ mounts.push({
 
 ### 6. MCP Server Failures
 
-If an MCP server fails to start, the agent may exit. Test MCP servers individually:
-
-```bash
-# Test Gmail MCP
-container run --rm --entrypoint /bin/bash nanoclaw-agent:latest -c '
-  npx -y @gongrzhe/server-gmail-autoauth-mcp --help
-'
-```
+If an MCP server fails to start, the agent may exit. Check the container logs for MCP initialization errors.
 
 ## Manual Container Testing
 
@@ -265,7 +260,7 @@ container run --rm --entrypoint /bin/bash nanoclaw-agent:latest -c '
 
 ## Session Persistence
 
-Claude sessions are stored in `~/.claude/projects/` on the host, mounted to `/home/node/.claude/projects/` inside the container.
+Claude sessions are stored per-group in `data/sessions/{group}/.claude/` for security isolation. Each group has its own session directory, preventing cross-group access to conversation history.
 
 **Critical:** The mount path must match the container user's HOME directory:
 - Container user: `node`
@@ -275,11 +270,11 @@ Claude sessions are stored in `~/.claude/projects/` on the host, mounted to `/ho
 To clear sessions:
 
 ```bash
-# Clear all sessions
-rm -rf ~/.claude/projects/
+# Clear all sessions for all groups
+rm -rf data/sessions/
 
 # Clear sessions for a specific group
-rm -rf ~/.claude/projects/*workspace-group*/
+rm -rf data/sessions/{groupFolder}/.claude/
 
 # Also clear the session ID from NanoClaw's tracking
 echo '{}' > data/sessions.json
@@ -304,7 +299,19 @@ ls -la data/ipc/tasks/
 
 # Read a specific IPC file
 cat data/ipc/messages/*.json
+
+# Check available groups (main channel only)
+cat data/ipc/main/available_groups.json
+
+# Check current tasks snapshot
+cat data/ipc/{groupFolder}/current_tasks.json
 ```
+
+**IPC file types:**
+- `messages/*.json` - Agent writes: outgoing WhatsApp messages
+- `tasks/*.json` - Agent writes: task operations (schedule, pause, resume, cancel, refresh_groups)
+- `current_tasks.json` - Host writes: read-only snapshot of scheduled tasks
+- `available_groups.json` - Host writes: read-only list of WhatsApp groups (main only)
 
 ## Quick Diagnostic Script
 

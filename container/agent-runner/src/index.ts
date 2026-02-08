@@ -17,9 +17,35 @@ interface ContainerInput {
   isScheduledTask?: boolean;
 }
 
+interface AgentResponse {
+  outputType: 'message' | 'log';
+  userMessage?: string;
+  internalLog?: string;
+}
+
+const AGENT_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    outputType: {
+      type: 'string',
+      enum: ['message', 'log'],
+      description: '"message": the userMessage field contains a message to send to the user or group. "log": the output will not be sent to the user or group.',
+    },
+    userMessage: {
+      type: 'string',
+      description: 'A message to send to the user or group. Include when outputType is "message".',
+    },
+    internalLog: {
+      type: 'string',
+      description: 'Information that will be logged internally but not sent to the user or group.',
+    },
+  },
+  required: ['outputType'],
+} as const;
+
 interface ContainerOutput {
   status: 'success' | 'error';
-  result: string | null;
+  result: AgentResponse | null;
   newSessionId?: string;
   error?: string;
 }
@@ -45,8 +71,13 @@ async function readStdin(): Promise<string> {
   });
 }
 
+const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
+const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
 function writeOutput(output: ContainerOutput): void {
+  console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
+  console.log(OUTPUT_END_MARKER);
 }
 
 function log(message: string): void {
@@ -217,13 +248,20 @@ async function main(): Promise<void> {
     isMain: input.isMain
   });
 
-  let result: string | null = null;
+  let result: AgentResponse | null = null;
   let newSessionId: string | undefined;
 
   // Add context for scheduled tasks
   let prompt = input.prompt;
   if (input.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - You are running automatically, not in response to a user message. Use mcp__nanoclaw__send_message if needed to communicate with the user.]\n\n${input.prompt}`;
+    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${input.prompt}`;
+  }
+
+  // Load global CLAUDE.md as additional system context (shared across all groups)
+  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  let globalClaudeMd: string | undefined;
+  if (!input.isMain && fs.existsSync(globalClaudeMdPath)) {
+    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
   try {
@@ -234,22 +272,27 @@ async function main(): Promise<void> {
       options: {
         cwd: '/workspace/group',
         resume: input.sessionId,
+        systemPrompt: globalClaudeMd
+          ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+          : undefined,
         allowedTools: [
           'Bash',
           'Read', 'Write', 'Edit', 'Glob', 'Grep',
           'WebSearch', 'WebFetch',
-          'mcp__nanoclaw__*',
-          'mcp__gmail__*'
+          'mcp__nanoclaw__*'
         ],
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: ['project'],
         mcpServers: {
-          nanoclaw: ipcMcp,
-          gmail: { command: 'npx', args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'] }
+          nanoclaw: ipcMcp
         },
         hooks: {
           PreCompact: [{ hooks: [createPreCompactHook()] }]
+        },
+        outputFormat: {
+          type: 'json_schema',
+          schema: AGENT_RESPONSE_SCHEMA,
         }
       }
     })) {
@@ -258,15 +301,29 @@ async function main(): Promise<void> {
         log(`Session initialized: ${newSessionId}`);
       }
 
-      if ('result' in message && message.result) {
-        result = message.result as string;
+      if (message.type === 'result') {
+        if (message.subtype === 'success' && message.structured_output) {
+          result = message.structured_output as AgentResponse;
+          if (result.outputType === 'message' && !result.userMessage) {
+            log('Warning: outputType is "message" but userMessage is missing, treating as "log"');
+            result = { outputType: 'log', internalLog: result.internalLog };
+          }
+          log(`Agent result: outputType=${result.outputType}${result.internalLog ? `, log=${result.internalLog}` : ''}`);
+        } else if (message.subtype === 'success' || message.subtype === 'error_max_structured_output_retries') {
+          // Structured output missing or agent couldn't produce valid structured output — fall back to text
+          log(`Structured output unavailable (subtype=${message.subtype}), falling back to text`);
+          const textResult = 'result' in message ? (message as { result?: string }).result : null;
+          if (textResult) {
+            result = { outputType: 'message', userMessage: textResult };
+          }
+        }
       }
     }
 
     log('Agent completed successfully');
     writeOutput({
       status: 'success',
-      result,
+      result: result ?? { outputType: 'log' },
       newSessionId
     });
 
