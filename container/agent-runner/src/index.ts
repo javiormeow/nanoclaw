@@ -18,7 +18,7 @@ interface ContainerInput {
 }
 
 interface AgentResponse {
-  status: 'responded' | 'silent';
+  outputType: 'message' | 'log';
   userMessage?: string;
   internalLog?: string;
 }
@@ -26,21 +26,21 @@ interface AgentResponse {
 const AGENT_RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
-    status: {
+    outputType: {
       type: 'string',
-      enum: ['responded', 'silent'],
-      description: 'Use "responded" when you have a message for the user. Use "silent" when the messages don\'t require a response (e.g. the conversation is between other people and doesn\'t involve you, or no trigger/mention was directed at you).',
+      enum: ['message', 'log'],
+      description: '"message": the userMessage field contains a message to send to the user or group. "log": the output will not be sent to the user or group.',
     },
     userMessage: {
       type: 'string',
-      description: 'The message to send to the user. Required when status is "responded".',
+      description: 'A message to send to the user or group. Include when outputType is "message".',
     },
     internalLog: {
       type: 'string',
-      description: 'Optional internal note about why you chose this status (for logging, not shown to users).',
+      description: 'Information that will be logged internally but not sent to the user or group.',
     },
   },
-  required: ['status'],
+  required: ['outputType'],
 } as const;
 
 interface ContainerOutput {
@@ -254,7 +254,14 @@ async function main(): Promise<void> {
   // Add context for scheduled tasks
   let prompt = input.prompt;
   if (input.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - You are running automatically, not in response to a user message. Use mcp__nanoclaw__send_message if needed to communicate with the user.]\n\n${input.prompt}`;
+    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${input.prompt}`;
+  }
+
+  // Load global CLAUDE.md as additional system context (shared across all groups)
+  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  let globalClaudeMd: string | undefined;
+  if (!input.isMain && fs.existsSync(globalClaudeMdPath)) {
+    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
   try {
@@ -265,6 +272,9 @@ async function main(): Promise<void> {
       options: {
         cwd: '/workspace/group',
         resume: input.sessionId,
+        systemPrompt: globalClaudeMd
+          ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+          : undefined,
         allowedTools: [
           'Bash',
           'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -294,13 +304,17 @@ async function main(): Promise<void> {
       if (message.type === 'result') {
         if (message.subtype === 'success' && message.structured_output) {
           result = message.structured_output as AgentResponse;
-          log(`Agent result: status=${result.status}${result.internalLog ? `, log=${result.internalLog}` : ''}`);
-        } else if (message.subtype === 'error_max_structured_output_retries') {
-          // Agent couldn't produce valid structured output — fall back to text result
-          log('Agent failed to produce structured output, falling back to text');
+          if (result.outputType === 'message' && !result.userMessage) {
+            log('Warning: outputType is "message" but userMessage is missing, treating as "log"');
+            result = { outputType: 'log', internalLog: result.internalLog };
+          }
+          log(`Agent result: outputType=${result.outputType}${result.internalLog ? `, log=${result.internalLog}` : ''}`);
+        } else if (message.subtype === 'success' || message.subtype === 'error_max_structured_output_retries') {
+          // Structured output missing or agent couldn't produce valid structured output — fall back to text
+          log(`Structured output unavailable (subtype=${message.subtype}), falling back to text`);
           const textResult = 'result' in message ? (message as { result?: string }).result : null;
           if (textResult) {
-            result = { status: 'responded', userMessage: textResult };
+            result = { outputType: 'message', userMessage: textResult };
           }
         }
       }
@@ -309,7 +323,7 @@ async function main(): Promise<void> {
     log('Agent completed successfully');
     writeOutput({
       status: 'success',
-      result: result ?? { status: 'silent' },
+      result: result ?? { outputType: 'log' },
       newSessionId
     });
 
