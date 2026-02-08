@@ -91,9 +91,41 @@ Tell the user:
 
 If they give you the token, add it to `.env`:
 
+If yes, first try extracting from the credentials file:
 ```bash
-echo "CLAUDE_CODE_OAUTH_TOKEN=<token>" > .env
+TOKEN=$(cat ~/.claude/.credentials.json 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty')
+if [ -n "$TOKEN" ]; then
+  echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" > .env
+  echo "Token configured: ${TOKEN:0:20}...${TOKEN: -4}"
+else
+  echo "No token found in credentials file"
+fi
 ```
+
+If the token wasn't found, tell the user:
+> The credentials file wasn't found. This is common on newer macOS versions (Tahoe+).
+>
+> You have two options:
+> 1. **Generate a setup token** (recommended) - Run `claude --setup-token` in another terminal. This generates a long-lived token valid for 1 year.
+> 2. **Log in first** - Run `claude` in another terminal and log in, then we'll try again.
+>
+> Which would you prefer?
+
+If they choose the setup token option:
+> Run this command in another terminal:
+> ```
+> claude --setup-token
+> ```
+> Copy the token that's displayed (starts with `sk-ant-oat01-`) and paste it here.
+
+When they provide the token:
+```bash
+# User provides TOKEN value
+echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" > .env
+echo "Token configured: ${TOKEN:0:20}...${TOKEN: -4}"
+```
+
+If they choose to log in first, have them run `claude` and log in, then re-run the extraction command above.
 
 ### Option 2: API Key
 
