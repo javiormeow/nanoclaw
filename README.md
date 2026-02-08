@@ -3,19 +3,19 @@
 </p>
 
 <p align="center">
-  My personal Claude assistant that runs securely in Apple containers. Lightweight and built to be understood and customized for your own needs.
+  My personal Claude assistant that runs securely in containers. Lightweight and built to be understood and customized for your own needs.
 </p>
 
-## Why This Exists
+## Why I Built This
 
-[OpenClaw](https://github.com/anthropics/openclaw) is an impressive project with a great vision. But I can't sleep well running software I don't understand with access to my life. OpenClaw has 52+ modules, 8 config management files, 45+ dependencies, and abstractions for 15 channel providers. Security is application-level (allowlists, pairing codes) rather than OS isolation—everything runs in one Node process with shared memory.
+[OpenClaw](https://github.com/openclaw/openclaw) is an impressive project with a great vision. But I can't sleep well running software I don't understand with access to my life. OpenClaw has 52+ modules, 8 config management files, 45+ dependencies, and abstractions for 15 channel providers. Security is application-level (allowlists, pairing codes) rather than OS isolation. Everything runs in one Node process with shared memory.
 
 NanoClaw gives you the same core functionality in a codebase you can understand in 8 minutes. One process. A handful of files. Agents run in actual Linux containers with filesystem isolation, not behind permission checks.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/anthropics/nanoclaw.git
+git clone https://github.com/gavrielc/nanoclaw.git
 cd nanoclaw
 claude
 ```
@@ -26,7 +26,7 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 
 **Small enough to understand.** One process, a few source files. No microservices, no message queues, no abstraction layers. Have Claude Code walk you through it.
 
-**Secure by isolation.** Agents run in Linux containers (Apple Container). They can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your Mac.
+**Secure by isolation.** Agents run in Linux containers (Apple Container on macOS, or Docker). They can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your host.
 
 **Built for one user.** This isn't a framework. It's working software that fits my exact needs. You fork it and have Claude Code make it match your exact needs.
 
@@ -34,21 +34,19 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 
 **AI-native.** No installation wizard; Claude Code guides setup. No monitoring dashboard; ask Claude what's happening. No debugging tools; describe the problem, Claude fixes it.
 
-**Skills over features.** Contributors shouldn't add features (e.g. support for Telegram) to the codebase. Instead, they contribute skills like `/add-telegram` that transform your fork. You end up with clean code that does exactly what you need.
+**Skills over features.** Contributors shouldn't add features (e.g. support for Telegram) to the codebase. Instead, they contribute [claude code skills](https://code.claude.com/docs/en/skills) like `/add-telegram` that transform your fork. You end up with clean code that does exactly what you need.
 
 **Best harness, best model.** This runs on Claude Agent SDK, which means you're running Claude Code directly. The harness matters. A bad harness makes even smart models seem dumb, a good harness gives them superpowers. Claude Code is (IMO) the best harness available.
 
-**No ToS gray areas.** Because it uses Claude Agent SDK natively with no hacks or workarounds, using your subscription with your auth token is completely legitimate (I think). No risk of being shut down for terms of service violations (I am not a lawyer).
-
-## What You Get
+## What It Supports
 
 - **WhatsApp I/O** - Message Claude from your phone
 - **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted
 - **Main channel** - Your private channel (self-chat) for admin control; every other group is completely isolated
-- **Email** - Read and send via Gmail (optional)
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content
-- **Container isolation** - Agents sandboxed in Apple containers
+- **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
+- **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
 
@@ -67,7 +65,7 @@ From the main channel (your self-chat), you can manage groups and tasks:
 @Andy join the Family Chat group
 ```
 
-## Customization
+## Customizing
 
 There are no configuration files to learn. Just tell Claude Code what you want:
 
@@ -97,9 +95,6 @@ Skills we'd love to see:
 - `/add-slack` - Add Slack
 - `/add-discord` - Add Discord
 
-**Container Runtime**
-- `/convert-to-docker` - Replace Apple Container with Docker (unlocks Linux)
-
 **Platform Support**
 - `/setup-windows` - Windows via WSL2 + Docker
 
@@ -108,10 +103,10 @@ Skills we'd love to see:
 
 ## Requirements
 
-- macOS Tahoe (26) or later - runs great on Mac Mini
+- macOS or Linux
 - Node.js 20+
 - [Claude Code](https://claude.ai/download)
-- [Apple Container](https://github.com/apple/container)
+- [Apple Container](https://github.com/apple/container) (macOS) or [Docker](https://docker.com/products/docker-desktop) (macOS/Linux)
 
 ## Architecture
 
@@ -136,15 +131,15 @@ Because I use WhatsApp. Fork it and run a skill to change it. That's the whole p
 
 **Why Apple Container instead of Docker?**
 
-Lightweight, fast, and built into macOS. Requires macOS Tahoe and runs great on a Mac Mini. Contribute a skill to convert to Docker if you want Docker.
+On macOS, Apple Container is lightweight, fast, and optimized for Apple silicon. But Docker is also fully supported—during `/setup`, you can choose which runtime to use. On Linux, Docker is used automatically.
 
 **Can I run this on Linux?**
 
-Yes. Run Claude Code and say "make this run on Linux." ~30 min of back-and-forth and it'll work. When you're done, ask Claude to create a skill explaining how to make it work on Linux, then contribute the skill back to the project.
+Yes. Run `/setup` and it will automatically configure Docker as the container runtime. Thanks to [@dotsetgreg](https://github.com/dotsetgreg) for contributing the `/convert-to-docker` skill.
 
 **Is this secure?**
 
-Agents run in containers, not behind application-level permission checks. They can only access explicitly mounted directories. You should still review what you're running, but the codebase is small enough that you actually can.
+Agents run in containers, not behind application-level permission checks. They can only access explicitly mounted directories. You should still review what you're running, but the codebase is small enough that you actually can. See [docs/SECURITY.md](docs/SECURITY.md) for the full security model.
 
 **Why no configuration files?**
 
